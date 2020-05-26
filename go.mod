@@ -1,4 +1,4 @@
-module github.com/sourcegraph/codeintelutil
+module github.com/sourcegraph/codeintelutils
 
 go 1.14
 

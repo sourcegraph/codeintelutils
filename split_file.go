@@ -1,4 +1,4 @@
-package codeintelutil
+package codeintelutils
 
 import (
 	"io"
