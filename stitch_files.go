@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/hashicorp/go-multierror"
-	"github.com/inconshreveable/log15"
 )
 
 // PartFilenameFunc constructs the name of a part file from its part index.
@@ -55,9 +54,7 @@ func StitchFiles(filename string, makePartFilename PartFilenameFunc, compress bo
 	}
 
 	for i := index - 1; i >= 0; i-- {
-		if err := os.Remove(makePartFilename(i)); err != nil {
-			log15.Error("Failed to remove bundle part", "index", index, "err", err)
-		}
+		_ = os.Remove(makePartFilename(i))
 	}
 
 	return nil
