@@ -25,39 +25,60 @@ func StitchFiles(filename string, makePartFilename PartFilenameFunc, compress bo
 		}
 	}()
 
-	var writer io.WriteCloser = targetFile
-	if compress {
-		writer = gzip.NewWriter(writer)
-		defer func() {
-			if closeErr := writer.Close(); closeErr != nil {
-				err = multierror.Append(err, closeErr)
+	r, err := StitchFilesReader(makePartFilename, compress)
+	if err != nil {
+		return err
+	}
+
+	_, err = io.Copy(targetFile, r)
+	return err
+}
+
+// StitchFilesReader combines multiple compressed file parts into a single reader. Each part on disk be
+// concatenated into a single file. The content of each part is decompressed and written to returned
+// reader sequentially. On success, the part files are removed.
+func StitchFilesReader(makePartFilename PartFilenameFunc, compress bool) (io.Reader, error) {
+	pr, pw := io.Pipe()
+
+	go func() {
+		defer pw.Close()
+
+		index := 0
+		for {
+			ok, err := writePart(pw, makePartFilename(index))
+			if err != nil {
+				_ = pw.CloseWithError(err)
+				return
 			}
-		}()
-	}
+			if !ok {
+				break
+			}
 
-	index := 0
-	for {
-		exists, reader, err := openPart(makePartFilename(index))
-		if err != nil {
-			return err
-		}
-		if !exists {
-			break
-		}
-		defer reader.Close()
-
-		if _, err := io.Copy(writer, reader); err != nil {
-			return err
+			index++
 		}
 
-		index++
-	}
+		for i := index - 1; i >= 0; i-- {
+			_ = os.Remove(makePartFilename(i))
+		}
+	}()
 
-	for i := index - 1; i >= 0; i-- {
-		_ = os.Remove(makePartFilename(i))
+	if compress {
+		return Gzip(pr), nil
 	}
+	return pr, nil
+}
 
-	return nil
+// WritePart opens the given filename and writes its content to the given writer.
+// Returns a boolean flag indicating whether or not a file was opened for reading.
+func writePart(w io.Writer, filename string) (bool, error) {
+	exists, reader, err := openPart(filename)
+	if err != nil || !exists {
+		return false, err
+	}
+	defer reader.Close()
+
+	_, err = io.Copy(w, reader)
+	return true, err
 }
 
 // openPart opens a gzip reader for a upload part file as well as a boolean flag
