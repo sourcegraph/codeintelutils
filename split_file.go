@@ -12,7 +12,21 @@ import (
 // are gzipped and are no larger than the given max payload size. The file names are returned in the
 // order in which they were written. The cleanup function removes all temporary files, and wraps the
 // error argument with any additional errors that happen during cleanup.
-func SplitFile(file string, maxPayloadSize int) (files []string, _ func(error) error, err error) {
+func SplitFile(filename string, maxPayloadSize int) (files []string, _ func(error) error, err error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer f.Close()
+
+	return SplitReader(f, maxPayloadSize)
+}
+
+// SplitReader writes the contents of the given reader into a series of temporary files, each of which
+// are gzipped and are no larger than the given max payload size. The file names are returned in the
+// order in which they were written. The cleanup function removes all temporary files, and wraps the
+// error argument with any additional errors that happen during cleanup.
+func SplitReader(r io.Reader, maxPayloadSize int) (files []string, _ func(error) error, err error) {
 	cleanup := func(err error) error {
 		for _, file := range files {
 			if removeErr := os.Remove(file); removeErr != nil {
@@ -28,12 +42,6 @@ func SplitFile(file string, maxPayloadSize int) (files []string, _ func(error) e
 		}
 	}()
 
-	sourceFile, err := os.Open(file)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer sourceFile.Close()
-
 	for {
 		partFile, err := ioutil.TempFile("", "")
 		if err != nil {
@@ -41,7 +49,7 @@ func SplitFile(file string, maxPayloadSize int) (files []string, _ func(error) e
 		}
 		defer partFile.Close()
 
-		n, err := io.CopyN(partFile, sourceFile, int64(maxPayloadSize))
+		n, err := io.CopyN(partFile, r, int64(maxPayloadSize))
 		if err != nil && err != io.EOF {
 			return nil, nil, err
 		}
