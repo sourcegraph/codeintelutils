@@ -16,6 +16,7 @@ import (
 
 type UploadIndexOpts struct {
 	Endpoint            string
+	Path                string
 	AccessToken         string
 	Repo                string
 	Commit              string
@@ -65,8 +66,13 @@ func uploadIndex(opts UploadIndexOpts) (id int, err error) {
 		}
 	}()
 
+	baseURL, err := makeBaseURL(opts)
+	if err != nil {
+		return 0, nil
+	}
+
 	args := requestArgs{
-		endpoint:    opts.Endpoint,
+		baseURL:     baseURL,
 		accessToken: opts.AccessToken,
 		repo:        opts.Repo,
 		commit:      opts.Commit,
@@ -93,8 +99,13 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 		err = cleanup(err)
 	}()
 
+	baseURL, err := makeBaseURL(opts)
+	if err != nil {
+		return 0, nil
+	}
+
 	setupArgs := requestArgs{
-		endpoint:    opts.Endpoint,
+		baseURL:     baseURL,
 		accessToken: opts.AccessToken,
 		repo:        opts.Repo,
 		commit:      opts.Commit,
@@ -120,7 +131,7 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 		}()
 
 		uploadArgs := requestArgs{
-			endpoint:    opts.Endpoint,
+			baseURL:     baseURL,
 			accessToken: opts.AccessToken,
 			uploadID:    id,
 			index:       i,
@@ -131,7 +142,7 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 	}
 
 	finalizeArgs := requestArgs{
-		endpoint:    opts.Endpoint,
+		baseURL:     baseURL,
 		accessToken: opts.AccessToken,
 		uploadID:    id,
 		done:        true,
@@ -143,11 +154,22 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 	return id, nil
 }
 
+func makeBaseURL(opts UploadIndexOpts) (*url.URL, error) {
+	endpointAndPath := opts.Endpoint
+	if opts.Path != "" {
+		endpointAndPath += opts.Path
+	} else {
+		endpointAndPath += "/.api/lsif/upload"
+	}
+
+	return url.Parse(endpointAndPath)
+}
+
 // requestArgs are a superset of the values that can be supplied in the query string of the
 // upload endpoint. The endpoint and access token fields must be set on every request, but the
 // remaining fields must be set when appropriate by the caller of makeUploadRequest.
 type requestArgs struct {
-	endpoint    string
+	baseURL     *url.URL
 	accessToken string
 	repo        string
 	commit      string
@@ -187,10 +209,7 @@ func (args requestArgs) EncodeQuery() string {
 // If target is a non-nil pointer, it will be assigned the value of the upload identifier present
 // in the response body.
 func makeUploadRequest(args requestArgs, payload io.Reader, target *int) error {
-	url, err := url.Parse(args.endpoint + "/.api/lsif/upload")
-	if err != nil {
-		return err
-	}
+	url := args.baseURL
 	url.RawQuery = args.EncodeQuery()
 
 	req, err := http.NewRequest("POST", url.String(), payload)
