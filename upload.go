@@ -18,6 +18,7 @@ type UploadIndexOpts struct {
 	Endpoint            string
 	Path                string
 	AccessToken         string
+	AdditionalHeaders   map[string]string
 	Repo                string
 	Commit              string
 	Root                string
@@ -72,13 +73,14 @@ func uploadIndex(opts UploadIndexOpts) (id int, err error) {
 	}
 
 	args := requestArgs{
-		baseURL:     baseURL,
-		accessToken: opts.AccessToken,
-		repo:        opts.Repo,
-		commit:      opts.Commit,
-		root:        opts.Root,
-		indexer:     opts.Indexer,
-		gitHubToken: opts.GitHubToken,
+		baseURL:           baseURL,
+		accessToken:       opts.AccessToken,
+		additionalHeaders: opts.AdditionalHeaders,
+		repo:              opts.Repo,
+		commit:            opts.Commit,
+		root:              opts.Root,
+		indexer:           opts.Indexer,
+		gitHubToken:       opts.GitHubToken,
 	}
 
 	if err := makeUploadRequest(args, Gzip(f), &id); err != nil {
@@ -169,18 +171,19 @@ func makeBaseURL(opts UploadIndexOpts) (*url.URL, error) {
 // upload endpoint. The endpoint and access token fields must be set on every request, but the
 // remaining fields must be set when appropriate by the caller of makeUploadRequest.
 type requestArgs struct {
-	baseURL     *url.URL
-	accessToken string
-	repo        string
-	commit      string
-	root        string
-	indexer     string
-	gitHubToken string
-	multiPart   bool
-	numParts    int
-	uploadID    int
-	index       int
-	done        bool
+	baseURL           *url.URL
+	accessToken       string
+	additionalHeaders map[string]string
+	repo              string
+	commit            string
+	root              string
+	indexer           string
+	gitHubToken       string
+	multiPart         bool
+	numParts          int
+	uploadID          int
+	index             int
+	done              bool
 }
 
 // EncodeQuery constructs a query string from the args.
@@ -220,6 +223,9 @@ func makeUploadRequest(args requestArgs, payload io.Reader, target *int) error {
 	req.Header.Set("Content-Type", "application/x-ndjson+lsif")
 	if args.accessToken != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("token %s", args.accessToken))
+	}
+	for k, v := range args.additionalHeaders {
+		req.Header.Set(k, v)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
