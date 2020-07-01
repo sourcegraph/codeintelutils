@@ -34,7 +34,7 @@ func StitchFiles(filename string, makePartFilename PartFilenameFunc, compress bo
 	return err
 }
 
-// StitchFilesReader combines multiple compressed file parts into a single reader. Each part on disk be
+// StitchFilesReader combines multiple compressed file parts into a single reader. Each part on disk is
 // concatenated into a single file. The content of each part is decompressed and written to returned
 // reader sequentially. On success, the part files are removed.
 func StitchFilesReader(makePartFilename PartFilenameFunc, compress bool) (io.Reader, error) {
