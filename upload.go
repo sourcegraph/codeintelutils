@@ -16,19 +16,27 @@ import (
 )
 
 type UploadIndexOpts struct {
-	Endpoint            string
-	Path                string
-	AccessToken         string
-	AdditionalHeaders   map[string]string
-	Repo                string
-	Commit              string
-	Root                string
-	Indexer             string
-	GitHubToken         string
-	File                string
-	MaxPayloadSizeBytes int
-	MaxRetries          int
-	RetryInterval       time.Duration
+	Endpoint             string
+	Path                 string
+	AccessToken          string
+	AdditionalHeaders    map[string]string
+	Repo                 string
+	Commit               string
+	Root                 string
+	Indexer              string
+	GitHubToken          string
+	File                 string
+	MaxPayloadSizeBytes  int
+	MaxRetries           int
+	RetryInterval        time.Duration
+	UploadProgressEvents chan UploadProgressEvent
+}
+
+type UploadProgressEvent struct {
+	NumParts      int
+	Part          int
+	Progress      float64
+	TotalProgress float64
 }
 
 // ErrUnauthorized occurs when the upload endpoint returns a 401 response.
@@ -79,7 +87,7 @@ func uploadIndex(opts UploadIndexOpts) (id int, err error) {
 	}
 
 	if err := retry(func() (err error) {
-		return uploadFile(args, opts.File, &id, 0, 1)
+		return uploadFile(args, opts.File, &id, 0, 1, opts.UploadProgressEvents)
 	}); err != nil {
 		return 0, err
 	}
@@ -130,7 +138,7 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 		}
 
 		if err := retry(func() (err error) {
-			return uploadFile(uploadArgs, file, nil, i, len(files))
+			return uploadFile(uploadArgs, file, nil, i, len(files), opts.UploadProgressEvents)
 		}); err != nil {
 			return 0, err
 		}
@@ -201,10 +209,13 @@ func (args requestArgs) EncodeQuery() string {
 	return qs.Encode()
 }
 
+const ProgressUpdateInterval = time.Millisecond * 100
+
 // uploadFile performs an HTTP POST to the upload endpoint with the content from the given file.
 // This method will gzip the content before sending. If target is a non-nil pointer, it will be
-// assigned the value of the upload identifier present in the response body.
-func uploadFile(args requestArgs, file string, target *int, part, numParts int) error {
+// assigned the value of the upload identifier present in the response body. If the events channel
+// is non-nil, progress of the upload will be sent to it on a timer.
+func uploadFile(args requestArgs, file string, target *int, part, numParts int, events chan<- UploadProgressEvent) error {
 	f, err := os.Open(file)
 	if err != nil {
 		return err
@@ -215,7 +226,41 @@ func uploadFile(args requestArgs, file string, target *int, part, numParts int) 
 		}
 	}()
 
-	return makeUploadRequest(args, Gzip(f), target)
+	var r io.Reader = f
+
+	if events != nil {
+		info, err := os.Stat(file)
+		if err != nil {
+			return err
+		}
+
+		rateReader := newRateReader(f, info.Size())
+		progressPerFile := 1 / float64(numParts)
+
+		t := time.NewTicker(ProgressUpdateInterval)
+		defer t.Stop()
+
+		go func() {
+			for range t.C {
+				p := rateReader.Progress()
+				event := UploadProgressEvent{
+					NumParts:      numParts,
+					Part:          part + 1,
+					Progress:      p,
+					TotalProgress: float64(part)*progressPerFile + (p * progressPerFile),
+				}
+
+				select {
+				case events <- event:
+				default:
+				}
+			}
+		}()
+
+		r = rateReader
+	}
+
+	return makeUploadRequest(args, Gzip(r), target)
 }
 
 // makeUploadRequest performs an HTTP POST to the upload endpoint. The query string of the request
