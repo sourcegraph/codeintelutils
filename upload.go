@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/hashicorp/go-multierror"
 	"github.com/pkg/errors"
@@ -26,6 +27,8 @@ type UploadIndexOpts struct {
 	GitHubToken         string
 	File                string
 	MaxPayloadSizeBytes int
+	MaxRetries          int
+	RetryInterval       time.Duration
 }
 
 // ErrUnauthorized occurs when the upload endpoint returns a 401 response.
@@ -55,22 +58,14 @@ func UploadIndex(opts UploadIndexOpts) (int, error) {
 	return id, nil
 }
 
-// uploadIndex performs a single request  to the upload endpoint. The new upload id is returned.
+// uploadIndex performs a single request to the upload endpoint. The new upload id is returned.
 func uploadIndex(opts UploadIndexOpts) (id int, err error) {
-	f, err := os.Open(opts.File)
-	if err != nil {
-		return 0, err
-	}
-	defer func() {
-		if closeErr := f.Close(); closeErr != nil {
-			err = multierror.Append(err, closeErr)
-		}
-	}()
-
 	baseURL, err := makeBaseURL(opts)
 	if err != nil {
 		return 0, nil
 	}
+
+	retry := makeRetry(opts.MaxRetries, opts.RetryInterval)
 
 	args := requestArgs{
 		baseURL:           baseURL,
@@ -83,7 +78,9 @@ func uploadIndex(opts UploadIndexOpts) (id int, err error) {
 		gitHubToken:       opts.GitHubToken,
 	}
 
-	if err := makeUploadRequest(args, Gzip(f), &id); err != nil {
+	if err := retry(func() (err error) {
+		return uploadFile(args, opts.File, &id, 0, 1)
+	}); err != nil {
 		return 0, err
 	}
 
@@ -93,6 +90,13 @@ func uploadIndex(opts UploadIndexOpts) (id int, err error) {
 // uploadMultipartIndex splits the index file into chunks small enough to upload, then
 // performs a series of request to the upload endpoint. The new upload id is returned.
 func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
+	baseURL, err := makeBaseURL(opts)
+	if err != nil {
+		return 0, nil
+	}
+
+	retry := makeRetry(opts.MaxRetries, opts.RetryInterval)
+
 	files, cleanup, err := SplitFile(opts.File, opts.MaxPayloadSizeBytes)
 	if err != nil {
 		return 0, err
@@ -100,11 +104,6 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 	defer func() {
 		err = cleanup(err)
 	}()
-
-	baseURL, err := makeBaseURL(opts)
-	if err != nil {
-		return 0, nil
-	}
 
 	setupArgs := requestArgs{
 		baseURL:     baseURL,
@@ -117,28 +116,22 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 		multiPart:   true,
 		numParts:    len(files),
 	}
-	if err := makeUploadRequest(setupArgs, nil, &id); err != nil {
+
+	if err := retry(func() error { return makeUploadRequest(setupArgs, nil, &id) }); err != nil {
 		return 0, err
 	}
 
 	for i, file := range files {
-		f, err := os.Open(file)
-		if err != nil {
-			return 0, err
-		}
-		defer func() {
-			if closeErr := f.Close(); closeErr != nil {
-				err = multierror.Append(err, closeErr)
-			}
-		}()
-
 		uploadArgs := requestArgs{
 			baseURL:     baseURL,
 			accessToken: opts.AccessToken,
 			uploadID:    id,
 			index:       i,
 		}
-		if err := makeUploadRequest(uploadArgs, Gzip(f), nil); err != nil {
+
+		if err := retry(func() (err error) {
+			return uploadFile(uploadArgs, file, nil, i, len(files))
+		}); err != nil {
 			return 0, err
 		}
 	}
@@ -149,7 +142,8 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 		uploadID:    id,
 		done:        true,
 	}
-	if err = makeUploadRequest(finalizeArgs, nil, nil); err != nil {
+
+	if err := retry(func() error { return makeUploadRequest(finalizeArgs, nil, nil) }); err != nil {
 		return 0, err
 	}
 
@@ -205,6 +199,23 @@ func (args requestArgs) EncodeQuery() string {
 	}
 
 	return qs.Encode()
+}
+
+// uploadFile performs an HTTP POST to the upload endpoint with the content from the given file.
+// This method will gzip the content before sending. If target is a non-nil pointer, it will be
+// assigned the value of the upload identifier present in the response body.
+func uploadFile(args requestArgs, file string, target *int, part, numParts int) error {
+	f, err := os.Open(file)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			err = multierror.Append(err, closeErr)
+		}
+	}()
+
+	return makeUploadRequest(args, Gzip(f), target)
 }
 
 // makeUploadRequest performs an HTTP POST to the upload endpoint. The query string of the request
@@ -264,6 +275,28 @@ func makeUploadRequest(args requestArgs, payload io.Reader, target *int) error {
 	}
 
 	return nil
+}
+
+// makeRetry returns a function that calls retry with the given max attempt and interval values.
+func makeRetry(n int, interval time.Duration) func(f func() error) error {
+	return func(f func() error) error {
+		return retry(f, n, interval)
+	}
+}
+
+// retry will re-invoke the given function until it returns a nil error value, or until the
+// maximum number of retries have been attempted. The returned error will be the last error
+// to occur.
+func retry(f func() error, n int, interval time.Duration) (err error) {
+	for i := n; i >= 0; i-- {
+		if err = f(); err == nil {
+			break
+		}
+
+		time.Sleep(interval)
+	}
+
+	return err
 }
 
 // queryValues is a convenience wrapper around url.Values that adds
