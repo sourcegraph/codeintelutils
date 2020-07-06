@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/hashicorp/go-multierror"
 )
@@ -15,6 +16,10 @@ type PartFilenameFunc func(index int) string
 // into a single file. The content of each part is decompressed and written to the new file sequentially.
 // On success, the part files are removed.
 func StitchFiles(filename string, makePartFilename PartFilenameFunc, compress bool) error {
+	if err := os.MkdirAll(filepath.Dir(filename), os.ModePerm); err != nil {
+		return err
+	}
+
 	targetFile, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE, 0666)
 	if err != nil {
 		return err
