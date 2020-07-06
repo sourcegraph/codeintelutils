@@ -30,9 +30,13 @@ func StitchFiles(filename string, makePartFilename PartFilenameFunc, compress bo
 		}
 	}()
 
-	r, err := StitchFilesReader(makePartFilename, compress)
+	r, err := StitchFilesReader(makePartFilename)
 	if err != nil {
 		return err
+	}
+
+	if compress {
+		r = Gzip(r)
 	}
 
 	_, err = io.Copy(targetFile, r)
@@ -42,7 +46,7 @@ func StitchFiles(filename string, makePartFilename PartFilenameFunc, compress bo
 // StitchFilesReader combines multiple compressed file parts into a single reader. Each part on disk is
 // concatenated into a single file. The content of each part is decompressed and written to returned
 // reader sequentially. On success, the part files are removed.
-func StitchFilesReader(makePartFilename PartFilenameFunc, compress bool) (io.Reader, error) {
+func StitchFilesReader(makePartFilename PartFilenameFunc) (io.Reader, error) {
 	pr, pw := io.Pipe()
 
 	go func() {
@@ -67,9 +71,6 @@ func StitchFilesReader(makePartFilename PartFilenameFunc, compress bool) (io.Rea
 		}
 	}()
 
-	if compress {
-		return Gzip(pr), nil
-	}
 	return pr, nil
 }
 
