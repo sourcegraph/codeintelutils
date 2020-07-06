@@ -13,9 +13,10 @@ import (
 type PartFilenameFunc func(index int) string
 
 // StitchFiles combines multiple compressed file parts into a single file. Each part on disk be concatenated
-// into a single file. The content of each part is decompressed and written to the new file sequentially.
-// On success, the part files are removed.
-func StitchFiles(filename string, makePartFilename PartFilenameFunc, compress bool) error {
+// into a single file. The content of each part is written to the new file sequentially. If decompress is
+// true, then each file part is gunzipped while read. If compress is true, the new file will be gzipped. On
+// success, the part files are removed.
+func StitchFiles(filename string, makePartFilename PartFilenameFunc, decompress, compress bool) error {
 	if err := os.MkdirAll(filepath.Dir(filename), os.ModePerm); err != nil {
 		return err
 	}
@@ -30,7 +31,7 @@ func StitchFiles(filename string, makePartFilename PartFilenameFunc, compress bo
 		}
 	}()
 
-	r, err := StitchFilesReader(makePartFilename)
+	r, err := StitchFilesReader(makePartFilename, decompress)
 	if err != nil {
 		return err
 	}
@@ -46,7 +47,7 @@ func StitchFiles(filename string, makePartFilename PartFilenameFunc, compress bo
 // StitchFilesReader combines multiple compressed file parts into a single reader. Each part on disk is
 // concatenated into a single file. The content of each part is decompressed and written to returned
 // reader sequentially. On success, the part files are removed.
-func StitchFilesReader(makePartFilename PartFilenameFunc) (io.Reader, error) {
+func StitchFilesReader(makePartFilename PartFilenameFunc, decompress bool) (io.Reader, error) {
 	pr, pw := io.Pipe()
 
 	go func() {
@@ -54,7 +55,7 @@ func StitchFilesReader(makePartFilename PartFilenameFunc) (io.Reader, error) {
 
 		index := 0
 		for {
-			ok, err := writePart(pw, makePartFilename(index))
+			ok, err := writePart(pw, makePartFilename(index), decompress)
 			if err != nil {
 				_ = pw.CloseWithError(err)
 				return
@@ -76,8 +77,8 @@ func StitchFilesReader(makePartFilename PartFilenameFunc) (io.Reader, error) {
 
 // WritePart opens the given filename and writes its content to the given writer.
 // Returns a boolean flag indicating whether or not a file was opened for reading.
-func writePart(w io.Writer, filename string) (bool, error) {
-	exists, reader, err := openPart(filename)
+func writePart(w io.Writer, filename string, decompress bool) (bool, error) {
+	exists, reader, err := openPart(filename, decompress)
 	if err != nil || !exists {
 		return false, err
 	}
@@ -89,7 +90,7 @@ func writePart(w io.Writer, filename string) (bool, error) {
 
 // openPart opens a gzip reader for a upload part file as well as a boolean flag
 // indicating if the file exists.
-func openPart(filename string) (bool, io.ReadCloser, error) {
+func openPart(filename string, decompress bool) (bool, io.ReadCloser, error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -97,6 +98,10 @@ func openPart(filename string) (bool, io.ReadCloser, error) {
 		}
 
 		return false, nil, err
+	}
+
+	if !decompress {
+		return true, f, nil
 	}
 
 	reader, err := gzip.NewReader(f)
