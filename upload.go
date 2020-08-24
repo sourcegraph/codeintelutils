@@ -304,7 +304,7 @@ func makeUploadRequest(args requestArgs, payload io.Reader, target *int) (bool, 
 
 		// Do not retry client errors
 		err = fmt.Errorf("unexpected status code: %d\n\n%s", resp.StatusCode, body)
-		return resp.StatusCode < 500, err
+		return resp.StatusCode >= 500, err
 	}
 
 	if target != nil {
