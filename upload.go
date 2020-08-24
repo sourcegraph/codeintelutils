@@ -86,7 +86,7 @@ func uploadIndex(opts UploadIndexOpts) (id int, err error) {
 		gitHubToken:       opts.GitHubToken,
 	}
 
-	if err := retry(func() (err error) {
+	if err := retry(func() (_ bool, err error) {
 		return uploadFile(args, opts.File, &id, 0, 1, opts.UploadProgressEvents)
 	}); err != nil {
 		return 0, err
@@ -125,7 +125,7 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 		numParts:    len(files),
 	}
 
-	if err := retry(func() error { return makeUploadRequest(setupArgs, nil, &id) }); err != nil {
+	if err := retry(func() (bool, error) { return makeUploadRequest(setupArgs, nil, &id) }); err != nil {
 		return 0, err
 	}
 
@@ -137,7 +137,7 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 			index:       i,
 		}
 
-		if err := retry(func() (err error) {
+		if err := retry(func() (_ bool, err error) {
 			return uploadFile(uploadArgs, file, nil, i, len(files), opts.UploadProgressEvents)
 		}); err != nil {
 			return 0, err
@@ -151,7 +151,7 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 		done:        true,
 	}
 
-	if err := retry(func() error { return makeUploadRequest(finalizeArgs, nil, nil) }); err != nil {
+	if err := retry(func() (bool, error) { return makeUploadRequest(finalizeArgs, nil, nil) }); err != nil {
 		return 0, err
 	}
 
@@ -214,11 +214,12 @@ const ProgressUpdateInterval = time.Millisecond * 100
 // uploadFile performs an HTTP POST to the upload endpoint with the content from the given file.
 // This method will gzip the content before sending. If target is a non-nil pointer, it will be
 // assigned the value of the upload identifier present in the response body. If the events channel
-// is non-nil, progress of the upload will be sent to it on a timer.
-func uploadFile(args requestArgs, file string, target *int, part, numParts int, events chan<- UploadProgressEvent) error {
+// is non-nil, progress of the upload will be sent to it on a timer. This function returns an error
+// as well as a boolean flag indicating if the function can be retried.
+func uploadFile(args requestArgs, file string, target *int, part, numParts int, events chan<- UploadProgressEvent) (bool, error) {
 	f, err := os.Open(file)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() {
 		if closeErr := f.Close(); closeErr != nil {
@@ -231,7 +232,7 @@ func uploadFile(args requestArgs, file string, target *int, part, numParts int, 
 	if events != nil {
 		info, err := os.Stat(file)
 		if err != nil {
-			return err
+			return false, err
 		}
 
 		rateReader := newRateReader(f, info.Size())
@@ -266,14 +267,15 @@ func uploadFile(args requestArgs, file string, target *int, part, numParts int, 
 // makeUploadRequest performs an HTTP POST to the upload endpoint. The query string of the request
 // is constructed from the given request args and the body of the request is the unmodified reader.
 // If target is a non-nil pointer, it will be assigned the value of the upload identifier present
-// in the response body.
-func makeUploadRequest(args requestArgs, payload io.Reader, target *int) error {
+// in the response body. This function returns an error as well as a boolean flag indicating if the
+// function can be retried.
+func makeUploadRequest(args requestArgs, payload io.Reader, target *int) (bool, error) {
 	url := args.baseURL
 	url.RawQuery = args.EncodeQuery()
 
 	req, err := http.NewRequest("POST", url.String(), payload)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	req.Header.Set("Content-Type", "application/x-ndjson+lsif")
@@ -286,21 +288,23 @@ func makeUploadRequest(args requestArgs, payload io.Reader, target *int) error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return true, err
 	}
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return true, err
 	}
 
 	if resp.StatusCode >= 300 {
 		if resp.StatusCode == http.StatusUnauthorized {
-			return ErrUnauthorized
+			return false, ErrUnauthorized
 		}
 
-		return fmt.Errorf("unexpected status code: %d\n\n%s", resp.StatusCode, body)
+		// Do not retry client errors
+		err = fmt.Errorf("unexpected status code: %d\n\n%s", resp.StatusCode, body)
+		return resp.StatusCode < 500, err
 	}
 
 	if target != nil {
@@ -308,33 +312,34 @@ func makeUploadRequest(args requestArgs, payload io.Reader, target *int) error {
 			ID string `json:"id"`
 		}
 		if err := json.Unmarshal(body, &respPayload); err != nil {
-			return err
+			return false, err
 		}
 
 		id, err := strconv.Atoi(respPayload.ID)
 		if err != nil {
-			return err
+			return false, err
 		}
 
 		*target = id
 	}
 
-	return nil
+	return false, nil
 }
 
 // makeRetry returns a function that calls retry with the given max attempt and interval values.
-func makeRetry(n int, interval time.Duration) func(f func() error) error {
-	return func(f func() error) error {
+func makeRetry(n int, interval time.Duration) func(f func() (bool, error)) error {
+	return func(f func() (bool, error)) error {
 		return retry(f, n, interval)
 	}
 }
 
-// retry will re-invoke the given function until it returns a nil error value, or until the
-// maximum number of retries have been attempted. The returned error will be the last error
-// to occur.
-func retry(f func() error, n int, interval time.Duration) (err error) {
+// retry will re-invoke the given function until it returns a nil error value, the function returns
+// a non-retryable error (as indicated by its boolean return value), or until the maximum number of
+// retries have been attempted. The returned error will be the last error to occur.
+func retry(f func() (bool, error), n int, interval time.Duration) (err error) {
+	var retry bool
 	for i := n; i >= 0; i-- {
-		if err = f(); err == nil {
+		if retry, err = f(); err == nil || !retry {
 			break
 		}
 
