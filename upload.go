@@ -114,15 +114,16 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 	}()
 
 	setupArgs := requestArgs{
-		baseURL:     baseURL,
-		accessToken: opts.AccessToken,
-		repo:        opts.Repo,
-		commit:      opts.Commit,
-		root:        opts.Root,
-		indexer:     opts.Indexer,
-		gitHubToken: opts.GitHubToken,
-		multiPart:   true,
-		numParts:    len(files),
+		baseURL:           baseURL,
+		accessToken:       opts.AccessToken,
+		additionalHeaders: opts.AdditionalHeaders,
+		repo:              opts.Repo,
+		commit:            opts.Commit,
+		root:              opts.Root,
+		indexer:           opts.Indexer,
+		gitHubToken:       opts.GitHubToken,
+		multiPart:         true,
+		numParts:          len(files),
 	}
 
 	if err := retry(func() (bool, error) { return makeUploadRequest(setupArgs, nil, &id) }); err != nil {
@@ -131,10 +132,11 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 
 	for i, file := range files {
 		uploadArgs := requestArgs{
-			baseURL:     baseURL,
-			accessToken: opts.AccessToken,
-			uploadID:    id,
-			index:       i,
+			baseURL:           baseURL,
+			accessToken:       opts.AccessToken,
+			additionalHeaders: opts.AdditionalHeaders,
+			uploadID:          id,
+			index:             i,
 		}
 
 		if err := retry(func() (_ bool, err error) {
@@ -145,10 +147,11 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 	}
 
 	finalizeArgs := requestArgs{
-		baseURL:     baseURL,
-		accessToken: opts.AccessToken,
-		uploadID:    id,
-		done:        true,
+		baseURL:           baseURL,
+		accessToken:       opts.AccessToken,
+		additionalHeaders: opts.AdditionalHeaders,
+		uploadID:          id,
+		done:              true,
 	}
 
 	if err := retry(func() (bool, error) { return makeUploadRequest(finalizeArgs, nil, nil) }); err != nil {
