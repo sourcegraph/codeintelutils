@@ -312,12 +312,12 @@ func makeUploadRequest(args requestArgs, payload io.Reader, target *int) (bool, 
 			ID string `json:"id"`
 		}
 		if err := json.Unmarshal(body, &respPayload); err != nil {
-			return false, err
+			return false, fmt.Errorf("unexpected response\n\n%s", body)
 		}
 
 		id, err := strconv.Atoi(respPayload.ID)
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("unexpected response\n\n%s", body)
 		}
 
 		*target = id
