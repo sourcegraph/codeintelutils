@@ -70,7 +70,7 @@ func UploadIndex(opts UploadIndexOpts) (int, error) {
 func uploadIndex(opts UploadIndexOpts) (id int, err error) {
 	baseURL, err := makeBaseURL(opts)
 	if err != nil {
-		return 0, nil
+		return 0, err
 	}
 
 	retry := makeRetry(opts.MaxRetries, opts.RetryInterval)
@@ -100,7 +100,7 @@ func uploadIndex(opts UploadIndexOpts) (id int, err error) {
 func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 	baseURL, err := makeBaseURL(opts)
 	if err != nil {
-		return 0, nil
+		return 0, err
 	}
 
 	retry := makeRetry(opts.MaxRetries, opts.RetryInterval)
