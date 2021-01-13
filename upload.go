@@ -1,6 +1,7 @@
 package codeintelutils
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,6 +31,7 @@ type UploadIndexOpts struct {
 	MaxRetries           int
 	RetryInterval        time.Duration
 	UploadProgressEvents chan UploadProgressEvent
+	Logger               RequestLogger
 }
 
 type UploadProgressEvent struct {
@@ -37,6 +39,11 @@ type UploadProgressEvent struct {
 	Part          int
 	Progress      float64
 	TotalProgress float64
+}
+
+type RequestLogger interface {
+	LogRequest(req *http.Request)
+	LogResponse(req *http.Request, resp *http.Response, body []byte, elapsed time.Duration)
 }
 
 // ErrUnauthorized occurs when the upload endpoint returns a 401 response.
@@ -87,7 +94,7 @@ func uploadIndex(opts UploadIndexOpts) (id int, err error) {
 	}
 
 	if err := retry(func() (_ bool, err error) {
-		return uploadFile(args, opts.File, &id, 0, 1, opts.UploadProgressEvents)
+		return uploadFile(args, opts.File, false, &id, 0, 1, opts.UploadProgressEvents, opts.Logger)
 	}); err != nil {
 		return 0, err
 	}
@@ -105,7 +112,15 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 
 	retry := makeRetry(opts.MaxRetries, opts.RetryInterval)
 
-	files, cleanup, err := SplitFile(opts.File, opts.MaxPayloadSizeBytes)
+	compressedFile, err := compressFile(opts.File)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = os.Remove(compressedFile)
+	}()
+
+	files, cleanup, err := SplitFile(compressedFile, opts.MaxPayloadSizeBytes)
 	if err != nil {
 		return 0, err
 	}
@@ -126,7 +141,7 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 		numParts:          len(files),
 	}
 
-	if err := retry(func() (bool, error) { return makeUploadRequest(setupArgs, nil, &id) }); err != nil {
+	if err := retry(func() (bool, error) { return makeUploadRequest(setupArgs, nil, &id, opts.Logger) }); err != nil {
 		return 0, err
 	}
 
@@ -140,7 +155,7 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 		}
 
 		if err := retry(func() (_ bool, err error) {
-			return uploadFile(uploadArgs, file, nil, i, len(files), opts.UploadProgressEvents)
+			return uploadFile(uploadArgs, file, true, nil, i, len(files), opts.UploadProgressEvents, opts.Logger)
 		}); err != nil {
 			return 0, err
 		}
@@ -154,7 +169,7 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 		done:              true,
 	}
 
-	if err := retry(func() (bool, error) { return makeUploadRequest(finalizeArgs, nil, nil) }); err != nil {
+	if err := retry(func() (bool, error) { return makeUploadRequest(finalizeArgs, nil, nil, opts.Logger) }); err != nil {
 		return 0, err
 	}
 
@@ -170,6 +185,37 @@ func makeBaseURL(opts UploadIndexOpts) (*url.URL, error) {
 	}
 
 	return url.Parse(endpointAndPath)
+}
+
+func compressFile(filename string) (_ string, err error) {
+	rawFile, err := os.Open(filename)
+	if err != nil {
+		return "", nil
+	}
+	defer rawFile.Close()
+
+	compressedFile, err := ioutil.TempFile("", "")
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if closeErr := compressedFile.Close(); err != nil {
+			err = multierror.Append(err, closeErr)
+		}
+	}()
+
+	gzipWriter := gzip.NewWriter(compressedFile)
+	defer func() {
+		if closeErr := gzipWriter.Close(); err != nil {
+			err = multierror.Append(err, closeErr)
+		}
+	}()
+
+	if _, err := io.Copy(gzipWriter, rawFile); err != nil {
+		return "", nil
+	}
+
+	return compressedFile.Name(), nil
 }
 
 // requestArgs are a superset of the values that can be supplied in the query string of the
@@ -219,7 +265,7 @@ const ProgressUpdateInterval = time.Millisecond * 100
 // assigned the value of the upload identifier present in the response body. If the events channel
 // is non-nil, progress of the upload will be sent to it on a timer. This function returns an error
 // as well as a boolean flag indicating if the function can be retried.
-func uploadFile(args requestArgs, file string, target *int, part, numParts int, events chan<- UploadProgressEvent) (bool, error) {
+func uploadFile(args requestArgs, file string, compressed bool, target *int, part, numParts int, events chan<- UploadProgressEvent, logger RequestLogger) (bool, error) {
 	f, err := os.Open(file)
 	if err != nil {
 		return false, err
@@ -264,7 +310,11 @@ func uploadFile(args requestArgs, file string, target *int, part, numParts int, 
 		r = rateReader
 	}
 
-	return makeUploadRequest(args, Gzip(r), target)
+	if !compressed {
+		r = Gzip(r)
+	}
+
+	return makeUploadRequest(args, r, target, logger)
 }
 
 // makeUploadRequest performs an HTTP POST to the upload endpoint. The query string of the request
@@ -272,7 +322,7 @@ func uploadFile(args requestArgs, file string, target *int, part, numParts int, 
 // If target is a non-nil pointer, it will be assigned the value of the upload identifier present
 // in the response body. This function returns an error as well as a boolean flag indicating if the
 // function can be retried.
-func makeUploadRequest(args requestArgs, payload io.Reader, target *int) (bool, error) {
+func makeUploadRequest(args requestArgs, payload io.Reader, target *int, logger RequestLogger) (bool, error) {
 	url := args.baseURL
 	url.RawQuery = args.EncodeQuery()
 
@@ -289,6 +339,11 @@ func makeUploadRequest(args requestArgs, payload io.Reader, target *int) (bool, 
 		req.Header.Set(k, v)
 	}
 
+	started := time.Now()
+	if logger != nil {
+		logger.LogRequest(req)
+	}
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return true, err
@@ -296,6 +351,9 @@ func makeUploadRequest(args requestArgs, payload io.Reader, target *int) (bool, 
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
+	if logger != nil {
+		logger.LogResponse(req, resp, body, time.Since(started))
+	}
 	if err != nil {
 		return true, err
 	}
@@ -306,7 +364,7 @@ func makeUploadRequest(args requestArgs, payload io.Reader, target *int) (bool, 
 		}
 
 		// Do not retry client errors
-		err = fmt.Errorf("unexpected status code: %d\n\n%s", resp.StatusCode, body)
+		err = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 		return resp.StatusCode >= 500, err
 	}
 
@@ -315,12 +373,12 @@ func makeUploadRequest(args requestArgs, payload io.Reader, target *int) (bool, 
 			ID string `json:"id"`
 		}
 		if err := json.Unmarshal(body, &respPayload); err != nil {
-			return false, fmt.Errorf("unexpected response\n\n%s", body)
+			return false, fmt.Errorf("unexpected response (%s)", err)
 		}
 
 		id, err := strconv.Atoi(respPayload.ID)
 		if err != nil {
-			return false, fmt.Errorf("unexpected response\n\n%s", body)
+			return false, fmt.Errorf("unexpected response (%s)", err)
 		}
 
 		*target = id

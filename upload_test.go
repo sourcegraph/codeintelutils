@@ -122,7 +122,7 @@ func TestUploadIndexMultipart(t *testing.T) {
 		Indexer:             "lsif-go",
 		GitHubToken:         "ght",
 		File:                f.Name(),
-		MaxPayloadSizeBytes: 1000,
+		MaxPayloadSizeBytes: 100,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error uploading index: %s", err)
@@ -132,12 +132,12 @@ func TestUploadIndexMultipart(t *testing.T) {
 		t.Errorf("unexpected id. want=%d have=%d", 42, id)
 	}
 
-	if len(payloads) != 20 {
-		t.Errorf("unexpected payloads size. want=%d have=%d", 20, len(payloads))
+	if len(payloads) != 5 {
+		t.Errorf("unexpected payloads size. want=%d have=%d", 5, len(payloads))
 	}
 
 	var allPayloads []byte
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 5; i++ {
 		allPayloads = append(allPayloads, payloads[i]...)
 	}
 
