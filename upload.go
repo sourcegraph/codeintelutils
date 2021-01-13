@@ -320,7 +320,7 @@ func makeUploadRequest(args requestArgs, payload io.Reader, target *int, logger 
 		}
 
 		// Do not retry client errors
-		err = fmt.Errorf("unexpected status code: %d\n\n%s", resp.StatusCode, body)
+		err = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 		return resp.StatusCode >= 500, err
 	}
 
@@ -329,12 +329,12 @@ func makeUploadRequest(args requestArgs, payload io.Reader, target *int, logger 
 			ID string `json:"id"`
 		}
 		if err := json.Unmarshal(body, &respPayload); err != nil {
-			return false, fmt.Errorf("unexpected response\n\n%s", body)
+			return false, fmt.Errorf("unexpected response (%s)", err)
 		}
 
 		id, err := strconv.Atoi(respPayload.ID)
 		if err != nil {
-			return false, fmt.Errorf("unexpected response\n\n%s", body)
+			return false, fmt.Errorf("unexpected response (%s)", err)
 		}
 
 		*target = id
