@@ -1,6 +1,7 @@
 package codeintelutils
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -93,7 +94,7 @@ func uploadIndex(opts UploadIndexOpts) (id int, err error) {
 	}
 
 	if err := retry(func() (_ bool, err error) {
-		return uploadFile(args, opts.File, &id, 0, 1, opts.UploadProgressEvents, opts.Logger)
+		return uploadFile(args, opts.File, false, &id, 0, 1, opts.UploadProgressEvents, opts.Logger)
 	}); err != nil {
 		return 0, err
 	}
@@ -111,7 +112,15 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 
 	retry := makeRetry(opts.MaxRetries, opts.RetryInterval)
 
-	files, cleanup, err := SplitFile(opts.File, opts.MaxPayloadSizeBytes)
+	compressedFile, err := compressFile(opts.File)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = os.Remove(compressedFile)
+	}()
+
+	files, cleanup, err := SplitFile(compressedFile, opts.MaxPayloadSizeBytes)
 	if err != nil {
 		return 0, err
 	}
@@ -146,7 +155,7 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 		}
 
 		if err := retry(func() (_ bool, err error) {
-			return uploadFile(uploadArgs, file, nil, i, len(files), opts.UploadProgressEvents, opts.Logger)
+			return uploadFile(uploadArgs, file, true, nil, i, len(files), opts.UploadProgressEvents, opts.Logger)
 		}); err != nil {
 			return 0, err
 		}
@@ -176,6 +185,37 @@ func makeBaseURL(opts UploadIndexOpts) (*url.URL, error) {
 	}
 
 	return url.Parse(endpointAndPath)
+}
+
+func compressFile(filename string) (_ string, err error) {
+	rawFile, err := os.Open(filename)
+	if err != nil {
+		return "", nil
+	}
+	defer rawFile.Close()
+
+	compressedFile, err := ioutil.TempFile("", "")
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if closeErr := compressedFile.Close(); err != nil {
+			err = multierror.Append(err, closeErr)
+		}
+	}()
+
+	gzipWriter := gzip.NewWriter(compressedFile)
+	defer func() {
+		if closeErr := gzipWriter.Close(); err != nil {
+			err = multierror.Append(err, closeErr)
+		}
+	}()
+
+	if _, err := io.Copy(gzipWriter, rawFile); err != nil {
+		return "", nil
+	}
+
+	return compressedFile.Name(), nil
 }
 
 // requestArgs are a superset of the values that can be supplied in the query string of the
@@ -225,7 +265,7 @@ const ProgressUpdateInterval = time.Millisecond * 100
 // assigned the value of the upload identifier present in the response body. If the events channel
 // is non-nil, progress of the upload will be sent to it on a timer. This function returns an error
 // as well as a boolean flag indicating if the function can be retried.
-func uploadFile(args requestArgs, file string, target *int, part, numParts int, events chan<- UploadProgressEvent, logger RequestLogger) (bool, error) {
+func uploadFile(args requestArgs, file string, compressed bool, target *int, part, numParts int, events chan<- UploadProgressEvent, logger RequestLogger) (bool, error) {
 	f, err := os.Open(file)
 	if err != nil {
 		return false, err
@@ -270,7 +310,11 @@ func uploadFile(args requestArgs, file string, target *int, part, numParts int, 
 		r = rateReader
 	}
 
-	return makeUploadRequest(args, Gzip(r), target, logger)
+	if !compressed {
+		r = Gzip(r)
+	}
+
+	return makeUploadRequest(args, r, target, logger)
 }
 
 // makeUploadRequest performs an HTTP POST to the upload endpoint. The query string of the request
