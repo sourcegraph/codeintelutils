@@ -27,6 +27,7 @@ type UploadIndexOpts struct {
 	Indexer              string
 	GitHubToken          string
 	File                 string
+	AssociatedIndexID    *int
 	MaxPayloadSizeBytes  int
 	MaxRetries           int
 	RetryInterval        time.Duration
@@ -91,6 +92,7 @@ func uploadIndex(opts UploadIndexOpts) (id int, err error) {
 		root:              opts.Root,
 		indexer:           opts.Indexer,
 		gitHubToken:       opts.GitHubToken,
+		associatedIndexID: opts.AssociatedIndexID,
 	}
 
 	if err := retry(func() (_ bool, err error) {
@@ -139,6 +141,7 @@ func uploadMultipartIndex(opts UploadIndexOpts) (id int, err error) {
 		gitHubToken:       opts.GitHubToken,
 		multiPart:         true,
 		numParts:          len(files),
+		associatedIndexID: opts.AssociatedIndexID,
 	}
 
 	if err := retry(func() (bool, error) { return makeUploadRequest(setupArgs, nil, &id, opts.Logger) }); err != nil {
@@ -235,6 +238,7 @@ type requestArgs struct {
 	uploadID          int
 	index             int
 	done              bool
+	associatedIndexID *int
 }
 
 // EncodeQuery constructs a query string from the args.
@@ -249,6 +253,10 @@ func (args requestArgs) EncodeQuery() string {
 	qs.SetOptionalInt("numParts", args.numParts)
 	qs.SetOptionalInt("uploadId", args.uploadID)
 	qs.SetOptionalBool("done", args.done)
+
+	if args.associatedIndexID != nil {
+		qs.SetInt("associatedIndexID", *args.associatedIndexID)
+	}
 
 	// Do not set an index of zero unless we're uploading a part
 	if args.uploadID != 0 && !args.multiPart && !args.done {
