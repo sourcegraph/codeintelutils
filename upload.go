@@ -255,7 +255,7 @@ func (args requestArgs) EncodeQuery() string {
 	qs.SetOptionalBool("done", args.done)
 
 	if args.associatedIndexID != nil {
-		qs.SetInt("associatedIndexID", *args.associatedIndexID)
+		qs.SetInt("associatedIndexId", *args.associatedIndexID)
 	}
 
 	// Do not set an index of zero unless we're uploading a part
